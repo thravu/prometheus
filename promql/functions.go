@@ -15,6 +15,7 @@ package promql
 
 import (
 	"fmt"
+	"github.com/thravu/rpca"
 	"math"
 	"regexp"
 	"sort"
@@ -906,6 +907,37 @@ func funcYear(vals []Value, args Expressions, enh *EvalNodeHelper) Vector {
 	})
 }
 
+func funcRpca(vals []Value, args Expressions, enh *EvalNodeHelper) Vector {
+	metricSamples := make([]Point, 0)
+	metricValues := make([]float64, 0)
+	for _, samples := range vals[0].(Matrix) {
+		for _, sample := range samples.Points {
+			metricValues = append(metricValues, sample.V)
+			metricSamples = append(metricSamples, sample)
+		}
+	}
+	rpcaAnamolies := checkRpca(metricValues)
+
+	for index, isAlerting := range rpcaAnamolies {
+		metricSample := metricSamples[index]
+		alertingVal := float64(0)
+		if isAlerting {
+			alertingVal = 1
+		}
+
+		enh.out = append(enh.out, Sample{
+			Point:  Point{T: metricSample.T, V: alertingVal},
+		})
+	}
+	return enh.out
+}
+
+func checkRpca(metricValues []float64) []bool {
+	anomolies := rpca.FindAnomalies(metricValues, rpca.Frequency(1),rpca.AutoDiff(false), rpca.Verbose(false), rpca.ForceDiff(false))
+	return anomolies.Positions
+}
+
+
 var functions = map[string]*Function{
 	"abs": {
 		Name:       "abs",
@@ -1191,6 +1223,12 @@ var functions = map[string]*Function{
 		Variadic:   1,
 		ReturnType: ValueTypeVector,
 		Call:       funcYear,
+	},
+	"rpca": {
+		Name:       "rpca",
+		ArgTypes:   []ValueType{ValueTypeMatrix},
+		ReturnType: ValueTypeVector,
+		Call:       funcRpca,
 	},
 }
 
