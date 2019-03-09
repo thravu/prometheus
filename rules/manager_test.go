@@ -538,7 +538,7 @@ func TestStaleness(t *testing.T) {
 	matcher, err := labels.NewMatcher(labels.MatchEqual, model.MetricNameLabel, "a_plus_one")
 	testutil.Ok(t, err)
 
-	set, err := querier.Select(nil, matcher)
+	set, _, err := querier.Select(nil, matcher)
 	testutil.Ok(t, err)
 
 	samples, err := readSeriesSet(set)
@@ -552,13 +552,13 @@ func TestStaleness(t *testing.T) {
 	metricSample[2].V = 42 // reflect.DeepEqual cannot handle NaN.
 
 	want := map[string][]promql.Point{
-		metric: []promql.Point{{0, 2}, {1000, 3}, {2000, 42}},
+		metric: {{0, 2}, {1000, 3}, {2000, 42}},
 	}
 
 	testutil.Equals(t, want, samples)
 }
 
-// Convert a SeriesSet into a form useable with reflect.DeepEqual.
+// Convert a SeriesSet into a form usable with reflect.DeepEqual.
 func readSeriesSet(ss storage.SeriesSet) (map[string][]promql.Point, error) {
 	result := map[string][]promql.Point{}
 
@@ -588,11 +588,11 @@ func TestCopyState(t *testing.T) {
 			NewRecordingRule("rule3", nil, nil),
 		},
 		seriesInPreviousEval: []map[string]labels.Labels{
-			map[string]labels.Labels{"a": nil},
-			map[string]labels.Labels{"r1": nil},
-			map[string]labels.Labels{"r2": nil},
-			map[string]labels.Labels{"r3a": nil},
-			map[string]labels.Labels{"r3b": nil},
+			{"a": nil},
+			{"r1": nil},
+			{"r2": nil},
+			{"r3a": nil},
+			{"r3b": nil},
 		},
 		evaluationDuration: time.Second,
 	}
@@ -611,11 +611,11 @@ func TestCopyState(t *testing.T) {
 	newGroup.CopyState(oldGroup)
 
 	want := []map[string]labels.Labels{
-		map[string]labels.Labels{"r3a": nil},
-		map[string]labels.Labels{"r3b": nil},
+		{"r3a": nil},
+		{"r3b": nil},
 		nil,
-		map[string]labels.Labels{"a": nil},
-		map[string]labels.Labels{"r1": nil},
+		{"a": nil},
+		{"r1": nil},
 		nil,
 	}
 	testutil.Equals(t, want, newGroup.seriesInPreviousEval)

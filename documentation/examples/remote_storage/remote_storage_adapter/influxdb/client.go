@@ -214,7 +214,7 @@ func mergeResult(labelsToSeries map[string]*prompb.TimeSeries, results []influx.
 }
 
 func concatLabels(labels map[string]string) string {
-	// 0xff cannot cannot occur in valid UTF-8 sequences, so use it
+	// 0xff cannot occur in valid UTF-8 sequences, so use it
 	// as a separator here.
 	separator := "\xff"
 	pairs := make([]string, 0, len(labels))
@@ -224,8 +224,8 @@ func concatLabels(labels map[string]string) string {
 	return strings.Join(pairs, separator)
 }
 
-func tagsToLabelPairs(name string, tags map[string]string) []*prompb.Label {
-	pairs := make([]*prompb.Label, 0, len(tags))
+func tagsToLabelPairs(name string, tags map[string]string) []prompb.Label {
+	pairs := make([]prompb.Label, 0, len(tags))
 	for k, v := range tags {
 		if v == "" {
 			// If we select metrics with different sets of labels names,
@@ -236,12 +236,12 @@ func tagsToLabelPairs(name string, tags map[string]string) []*prompb.Label {
 			// to make the result correct.
 			continue
 		}
-		pairs = append(pairs, &prompb.Label{
+		pairs = append(pairs, prompb.Label{
 			Name:  k,
 			Value: v,
 		})
 	}
-	pairs = append(pairs, &prompb.Label{
+	pairs = append(pairs, prompb.Label{
 		Name:  model.MetricNameLabel,
 		Value: name,
 	})

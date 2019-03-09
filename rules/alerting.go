@@ -206,10 +206,6 @@ func (r *AlertingRule) Annotations() labels.Labels {
 	return r.annotations
 }
 
-func (r *AlertingRule) equal(o *AlertingRule) bool {
-	return r.name == o.name && labels.Equal(r.labels, o.labels)
-}
-
 func (r *AlertingRule) sample(alert *Alert, ts time.Time) promql.Sample {
 	lb := labels.NewBuilder(r.labels)
 
@@ -480,7 +476,7 @@ func (r *AlertingRule) String() string {
 
 	byt, err := yaml.Marshal(ar)
 	if err != nil {
-		return fmt.Sprintf("error marshalling alerting rule: %s", err.Error())
+		return fmt.Sprintf("error marshaling alerting rule: %s", err.Error())
 	}
 
 	return string(byt)
@@ -495,27 +491,27 @@ func (r *AlertingRule) HTMLSnippet(pathPrefix string) html_template.HTML {
 		alertNameLabel:        model.LabelValue(r.name),
 	}
 
-	labels := make(map[string]string, len(r.labels))
+	labelsMap := make(map[string]string, len(r.labels))
 	for _, l := range r.labels {
-		labels[l.Name] = html_template.HTMLEscapeString(l.Value)
+		labelsMap[l.Name] = html_template.HTMLEscapeString(l.Value)
 	}
 
-	annotations := make(map[string]string, len(r.annotations))
+	annotationsMap := make(map[string]string, len(r.annotations))
 	for _, l := range r.annotations {
-		annotations[l.Name] = html_template.HTMLEscapeString(l.Value)
+		annotationsMap[l.Name] = html_template.HTMLEscapeString(l.Value)
 	}
 
 	ar := rulefmt.Rule{
 		Alert:       fmt.Sprintf("<a href=%q>%s</a>", pathPrefix+strutil.TableLinkForExpression(alertMetric.String()), r.name),
 		Expr:        fmt.Sprintf("<a href=%q>%s</a>", pathPrefix+strutil.TableLinkForExpression(r.vector.String()), html_template.HTMLEscapeString(r.vector.String())),
 		For:         model.Duration(r.holdDuration),
-		Labels:      labels,
-		Annotations: annotations,
+		Labels:      labelsMap,
+		Annotations: annotationsMap,
 	}
 
 	byt, err := yaml.Marshal(ar)
 	if err != nil {
-		return html_template.HTML(fmt.Sprintf("error marshalling alerting rule: %q", html_template.HTMLEscapeString(err.Error())))
+		return html_template.HTML(fmt.Sprintf("error marshaling alerting rule: %q", html_template.HTMLEscapeString(err.Error())))
 	}
 	return html_template.HTML(byt)
 }

@@ -29,14 +29,14 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
-
-	dto "github.com/prometheus/client_model/go"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
 	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/prometheus/pkg/relabel"
 	"github.com/prometheus/prometheus/pkg/textparse"
 	"github.com/prometheus/prometheus/pkg/timestamp"
 	"github.com/prometheus/prometheus/pkg/value"
@@ -46,9 +46,9 @@ import (
 
 func TestNewScrapePool(t *testing.T) {
 	var (
-		app = &nopAppendable{}
-		cfg = &config.ScrapeConfig{}
-		sp  = newScrapePool(cfg, app, nil)
+		app   = &nopAppendable{}
+		cfg   = &config.ScrapeConfig{}
+		sp, _ = newScrapePool(cfg, app, nil)
 	)
 
 	if a, ok := sp.appendable.(*nopAppendable); !ok || a != app {
@@ -68,10 +68,10 @@ func TestDroppedTargetsList(t *testing.T) {
 		cfg = &config.ScrapeConfig{
 			JobName:        "dropMe",
 			ScrapeInterval: model.Duration(1),
-			RelabelConfigs: []*config.RelabelConfig{
+			RelabelConfigs: []*relabel.Config{
 				{
-					Action:       config.RelabelDrop,
-					Regex:        mustNewRegexp("dropMe"),
+					Action:       relabel.Drop,
+					Regex:        relabel.MustNewRegexp("dropMe"),
 					SourceLabels: model.LabelNames{"job"},
 				},
 			},
@@ -79,11 +79,11 @@ func TestDroppedTargetsList(t *testing.T) {
 		tgs = []*targetgroup.Group{
 			{
 				Targets: []model.LabelSet{
-					model.LabelSet{model.AddressLabel: "127.0.0.1:9090"},
+					{model.AddressLabel: "127.0.0.1:9090"},
 				},
 			},
 		}
-		sp                     = newScrapePool(cfg, app, nil)
+		sp, _                  = newScrapePool(cfg, app, nil)
 		expectedLabelSetString = "{__address__=\"127.0.0.1:9090\", __metrics_path__=\"\", __scheme__=\"\", job=\"dropMe\"}"
 		expectedLength         = 1
 	)
@@ -219,7 +219,7 @@ func TestScrapePoolReload(t *testing.T) {
 	}
 	// On starting to run, new loops created on reload check whether their preceding
 	// equivalents have been stopped.
-	newLoop := func(_ *Target, s scraper, _ int, _ bool, _ []*config.RelabelConfig) loop {
+	newLoop := func(_ *Target, s scraper, _ int, _ bool, _ []*relabel.Config) loop {
 		l := &testLoop{}
 		l.startFunc = func(interval, timeout time.Duration, errc chan<- error) {
 			if interval != 3*time.Second {
@@ -305,7 +305,7 @@ func TestScrapePoolReload(t *testing.T) {
 func TestScrapePoolAppender(t *testing.T) {
 	cfg := &config.ScrapeConfig{}
 	app := &nopAppendable{}
-	sp := newScrapePool(cfg, app, nil)
+	sp, _ := newScrapePool(cfg, app, nil)
 
 	loop := sp.newLoop(&Target{}, nil, 0, false, nil)
 	appl, ok := loop.(*scrapeLoop)
@@ -348,18 +348,18 @@ func TestScrapePoolRaces(t *testing.T) {
 	newConfig := func() *config.ScrapeConfig {
 		return &config.ScrapeConfig{ScrapeInterval: interval, ScrapeTimeout: timeout}
 	}
-	sp := newScrapePool(newConfig(), &nopAppendable{}, nil)
+	sp, _ := newScrapePool(newConfig(), &nopAppendable{}, nil)
 	tgts := []*targetgroup.Group{
-		&targetgroup.Group{
+		{
 			Targets: []model.LabelSet{
-				model.LabelSet{model.AddressLabel: "127.0.0.1:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.2:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.3:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.4:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.5:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.6:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.7:9090"},
-				model.LabelSet{model.AddressLabel: "127.0.0.8:9090"},
+				{model.AddressLabel: "127.0.0.1:9090"},
+				{model.AddressLabel: "127.0.0.2:9090"},
+				{model.AddressLabel: "127.0.0.3:9090"},
+				{model.AddressLabel: "127.0.0.4:9090"},
+				{model.AddressLabel: "127.0.0.5:9090"},
+				{model.AddressLabel: "127.0.0.6:9090"},
+				{model.AddressLabel: "127.0.0.7:9090"},
+				{model.AddressLabel: "127.0.0.8:9090"},
 			},
 		},
 	}
@@ -878,7 +878,7 @@ func TestScrapeLoopAppendSampleLimit(t *testing.T) {
 		t.Fatalf("Did not see expected sample limit error: %s", err)
 	}
 
-	// Check that the Counter has been incremented a simgle time for the scrape,
+	// Check that the Counter has been incremented a single time for the scrape,
 	// not multiple times for each sample.
 	metric := dto.Metric{}
 	err = targetScrapeSampleLimit.Write(&metric)
@@ -1212,9 +1212,11 @@ func TestTargetScraperScrapeOK(t *testing.T) {
 	}
 	var buf bytes.Buffer
 
-	if _, err := ts.scrape(context.Background(), &buf); err != nil {
+	contentType, err := ts.scrape(context.Background(), &buf)
+	if err != nil {
 		t.Fatalf("Unexpected scrape error: %s", err)
 	}
+	require.Equal(t, "text/plain; version=0.0.4", contentType)
 	require.Equal(t, "metric_a 1\nmetric_b 2\n", buf.String())
 }
 
@@ -1252,8 +1254,11 @@ func TestTargetScrapeScrapeCancel(t *testing.T) {
 	}()
 
 	go func() {
-		if _, err := ts.scrape(ctx, ioutil.Discard); err != context.Canceled {
-			errc <- fmt.Errorf("Expected context cancelation error but got: %s", err)
+		_, err := ts.scrape(ctx, ioutil.Discard)
+		if err == nil {
+			errc <- fmt.Errorf("Expected error but got nil")
+		} else if ctx.Err() != context.Canceled {
+			errc <- fmt.Errorf("Expected context cancelation error but got: %s", ctx.Err())
 		}
 		close(errc)
 	}()

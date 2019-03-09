@@ -28,11 +28,11 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
+	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	config_util "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/version"
-	"golang.org/x/net/context/ctxhttp"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
@@ -61,6 +61,30 @@ var (
 			Objectives: map[float64]float64{0.01: 0.001, 0.05: 0.005, 0.5: 0.05, 0.90: 0.01, 0.99: 0.001},
 		},
 		[]string{"interval"},
+	)
+	targetScrapePools = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "prometheus_target_scrape_pools_total",
+			Help: "Total number of scrape pool creation atttempts.",
+		},
+	)
+	targetScrapePoolsFailed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "prometheus_target_scrape_pools_failed_total",
+			Help: "Total number of scrape pool creations that failed.",
+		},
+	)
+	targetScrapePoolReloads = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "prometheus_target_scrape_pool_reloads_total",
+			Help: "Total number of scrape loop reloads.",
+		},
+	)
+	targetScrapePoolReloadsFailed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "prometheus_target_scrape_pool_reloads_failed_total",
+			Help: "Total number of failed scrape loop reloads.",
+		},
 	)
 	targetSyncIntervalLength = prometheus.NewSummaryVec(
 		prometheus.SummaryOpts{
@@ -106,6 +130,10 @@ var (
 func init() {
 	prometheus.MustRegister(targetIntervalLength)
 	prometheus.MustRegister(targetReloadIntervalLength)
+	prometheus.MustRegister(targetScrapePools)
+	prometheus.MustRegister(targetScrapePoolsFailed)
+	prometheus.MustRegister(targetScrapePoolReloads)
+	prometheus.MustRegister(targetScrapePoolReloadsFailed)
 	prometheus.MustRegister(targetSyncIntervalLength)
 	prometheus.MustRegister(targetScrapePoolSyncsCounter)
 	prometheus.MustRegister(targetScrapeSampleLimit)
@@ -130,22 +158,23 @@ type scrapePool struct {
 	cancel         context.CancelFunc
 
 	// Constructor for new scrape loops. This is settable for testing convenience.
-	newLoop func(*Target, scraper, int, bool, []*config.RelabelConfig) loop
+	newLoop func(*Target, scraper, int, bool, []*relabel.Config) loop
 }
 
 const maxAheadTime = 10 * time.Minute
 
 type labelsMutator func(labels.Labels) labels.Labels
 
-func newScrapePool(cfg *config.ScrapeConfig, app Appendable, logger log.Logger) *scrapePool {
+func newScrapePool(cfg *config.ScrapeConfig, app Appendable, logger log.Logger) (*scrapePool, error) {
+	targetScrapePools.Inc()
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
 
 	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName)
 	if err != nil {
-		// Any errors that could occur here should be caught during config validation.
-		level.Error(logger).Log("msg", "Error creating HTTP client", "err", err)
+		targetScrapePoolsFailed.Inc()
+		return nil, errors.Wrap(err, "error creating HTTP client")
 	}
 
 	buffers := pool.New(1e3, 100e6, 3, func(sz int) interface{} { return make([]byte, 0, sz) })
@@ -160,7 +189,7 @@ func newScrapePool(cfg *config.ScrapeConfig, app Appendable, logger log.Logger) 
 		loops:         map[uint64]loop{},
 		logger:        logger,
 	}
-	sp.newLoop = func(t *Target, s scraper, limit int, honor bool, mrc []*config.RelabelConfig) loop {
+	sp.newLoop = func(t *Target, s scraper, limit int, honor bool, mrc []*relabel.Config) loop {
 		// Update the targets retrieval function for metadata to a new scrape cache.
 		cache := newScrapeCache()
 		t.setMetadataStore(cache)
@@ -183,7 +212,7 @@ func newScrapePool(cfg *config.ScrapeConfig, app Appendable, logger log.Logger) 
 		)
 	}
 
-	return sp
+	return sp, nil
 }
 
 func (sp *scrapePool) ActiveTargets() []*Target {
@@ -228,7 +257,8 @@ func (sp *scrapePool) stop() {
 // reload the scrape pool with the given scrape configuration. The target state is preserved
 // but all scrape loops are restarted with the new scrape configuration.
 // This method returns after all scrape loops that were stopped have stopped scraping.
-func (sp *scrapePool) reload(cfg *config.ScrapeConfig) {
+func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
+	targetScrapePoolReloads.Inc()
 	start := time.Now()
 
 	sp.mtx.Lock()
@@ -236,8 +266,8 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) {
 
 	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName)
 	if err != nil {
-		// Any errors that could occur here should be caught during config validation.
-		level.Error(sp.logger).Log("msg", "Error creating HTTP client", "err", err)
+		targetScrapePoolReloadsFailed.Inc()
+		return errors.Wrap(err, "error creating HTTP client")
 	}
 	sp.config = cfg
 	sp.client = client
@@ -273,6 +303,7 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) {
 	targetReloadIntervalLength.WithLabelValues(interval.String()).Observe(
 		time.Since(start).Seconds(),
 	)
+	return nil
 }
 
 // Sync converts target groups into actual scrape targets and synchronizes
@@ -367,7 +398,7 @@ func (sp *scrapePool) sync(targets []*Target) {
 	wg.Wait()
 }
 
-func mutateSampleLabels(lset labels.Labels, target *Target, honor bool, rc []*config.RelabelConfig) labels.Labels {
+func mutateSampleLabels(lset labels.Labels, target *Target, honor bool, rc []*relabel.Config) labels.Labels {
 	lb := labels.NewBuilder(lset)
 
 	if honor {
@@ -469,7 +500,7 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 		s.req = req
 	}
 
-	resp, err := ctxhttp.Do(ctx, s.client, s.req)
+	resp, err := s.client.Do(s.req.WithContext(ctx))
 	if err != nil {
 		return "", err
 	}
@@ -481,7 +512,10 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 
 	if resp.Header.Get("Content-Encoding") != "gzip" {
 		_, err = io.Copy(w, resp.Body)
-		return "", err
+		if err != nil {
+			return "", err
+		}
+		return resp.Header.Get("Content-Type"), nil
 	}
 
 	if s.gzipr == nil {
@@ -782,11 +816,8 @@ func (sl *scrapeLoop) run(interval, timeout time.Duration, errc chan<- error) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	buf := bytes.NewBuffer(make([]byte, 0, 16000))
-
 mainLoop:
 	for {
-		buf.Reset()
 		select {
 		case <-sl.ctx.Done():
 			close(sl.stopped)
@@ -871,7 +902,7 @@ func (sl *scrapeLoop) endOfRunStaleness(last time.Time, ticker *time.Ticker, int
 	// Scraping has stopped. We want to write stale markers but
 	// the target may be recreated, so we wait just over 2 scrape intervals
 	// before creating them.
-	// If the context is cancelled, we presume the server is shutting down
+	// If the context is canceled, we presume the server is shutting down
 	// and will restart where is was. We do not attempt to write stale markers
 	// in this case.
 
@@ -928,6 +959,7 @@ type sample struct {
 	v      float64
 }
 
+//lint:ignore U1000 staticcheck falsely reports that samples is unused.
 type samples []sample
 
 func (s samples) Len() int      { return len(s) }
